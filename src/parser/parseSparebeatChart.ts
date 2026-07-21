@@ -69,6 +69,17 @@ function parseDifficulty(
     }
   }
 
+  // 実際のSparebeat JSONには拍子という概念が存在しないため、
+  // パース時に必ず先頭tick(0)へ既定の4拍子を宣言しておく。
+  // 既にtick0にイベントがあればそこへマージする
+  if (timelineEvents.length > 0 && timelineEvents[0].tick === 0) {
+    if (timelineEvents[0].beats === undefined) {
+      timelineEvents[0].beats = 4;
+    }
+  } else {
+    timelineEvents.unshift({ id: createId('event'), tick: 0, beats: 4 });
+  }
+
   const notes: Note[] = [];
   const pendingLongStart: (number | null)[] = [null, null, null, null];
 

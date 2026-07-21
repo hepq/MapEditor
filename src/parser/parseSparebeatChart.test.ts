@@ -108,6 +108,7 @@ describe('parseSparebeatChart', () => {
     const { timelineEvents, notes } = result.difficulties.easy;
 
     expect(timelineEvents).toEqual([
+      expect.objectContaining({ tick: 0, beats: 4 }),
       expect.objectContaining({ tick: 48, bpm: 180 }),
       expect.objectContaining({ tick: 48, speed: 0.8 }),
       expect.objectContaining({ tick: 48, barLine: false }),
@@ -118,11 +119,11 @@ describe('parseSparebeatChart', () => {
       expect.objectContaining({ lane: 1, tick: 48 }),
     ]);
     // speed/barLineが未指定のイベントには当該キーが存在しないこと
-    expect(timelineEvents[0]).not.toHaveProperty('speed');
-    expect(timelineEvents[0]).not.toHaveProperty('barLine');
+    expect(timelineEvents[1]).not.toHaveProperty('speed');
+    expect(timelineEvents[1]).not.toHaveProperty('barLine');
   });
 
-  it('easy譜面が空配列[]の場合、notes/bindZones/timelineEventsが全て空になる', () => {
+  it('easy譜面が空配列[]の場合、notes/bindZonesが空になり、timelineEventsには既定の4拍子のみ含まれる', () => {
     const chart = makeChart({}, []);
     const result = parseSparebeatChart(chart);
 
@@ -130,7 +131,7 @@ describe('parseSparebeatChart', () => {
       level: 3,
       notes: [],
       bindZones: [],
-      timelineEvents: [],
+      timelineEvents: [expect.objectContaining({ tick: 0, beats: 4 })],
     });
   });
 
@@ -165,6 +166,7 @@ describe('parseSparebeatChart', () => {
     expect(notes).toHaveLength(104);
     expect(bindZones).toEqual([expect.objectContaining({ startTick: 240, endTick: 384 })]);
     expect(timelineEvents).toEqual([
+      expect.objectContaining({ tick: 0, beats: 4 }),
       expect.objectContaining({ tick: 432, bpm: 250, speed: 1.1, barLine: false }),
     ]);
 
@@ -183,9 +185,19 @@ describe('parseSparebeatChart', () => {
     // 末尾の通常ノーツ
     expect(notes).toContainEqual(expect.objectContaining({ lane: 3, tick: 477, kind: 'tap', attack: false }));
 
-    // 難易度未使用(normal/hard)は空
-    expect(result.difficulties.normal).toEqual({ level: 7, notes: [], bindZones: [], timelineEvents: [] });
-    expect(result.difficulties.hard).toEqual({ level: 12, notes: [], bindZones: [], timelineEvents: [] });
+    // 難易度未使用(normal/hard)はnotes/bindZonesが空、timelineEventsは既定の4拍子のみ
+    expect(result.difficulties.normal).toEqual({
+      level: 7,
+      notes: [],
+      bindZones: [],
+      timelineEvents: [expect.objectContaining({ tick: 0, beats: 4 })],
+    });
+    expect(result.difficulties.hard).toEqual({
+      level: 12,
+      notes: [],
+      bindZones: [],
+      timelineEvents: [expect.objectContaining({ tick: 0, beats: 4 })],
+    });
   });
 
   it('不正な文字が含まれる場合はエラーを投げる', () => {

@@ -46,4 +46,5 @@ export interface TimelineEvent {
   bpm?: number;
   speed?: number;
   barLine?: boolean;
+  beats?: number; // 1小節あたりの拍数。このtickから次の変更まで適用される
 }

@@ -45,7 +45,11 @@ function stripIds(difficulty: Difficulty) {
     bindZones: difficulty.bindZones
       .map(({ id: _id, ...rest }) => rest)
       .sort((a, b) => a.startTick - b.startTick),
-    timelineEvents: difficulty.timelineEvents.map(({ id: _id, tick: _tick, ...rest }) => rest),
+    // beatsは実際のSparebeat形式に存在せず再インポート時に既定値へリセットされるため、
+    // ラウンドトリップの同一性比較からは除外する
+    timelineEvents: difficulty.timelineEvents
+      .map(({ id: _id, tick: _tick, beats: _beats, ...rest }) => rest)
+      .filter((e) => Object.keys(e).length > 0),
   };
 }
 
@@ -168,5 +172,56 @@ describe('serializeDifficultyMap', () => {
   it('重なるバインドゾーンはエラーを投げる', () => {
     const difficulty = makeDifficulty({ bindZones: [bind(0, 48), bind(24, 96)] });
     expect(() => serializeDifficultyMap(difficulty)).toThrow(/Overlapping bind zones/);
+  });
+
+  it('beats変更により小節の長さが変わる', () => {
+    const difficulty = makeDifficulty({
+      notes: [tap(0, 0), tap(1, 48)],
+      timelineEvents: [event(0, { beats: 4 }), event(48, { beats: 5 })],
+    });
+    const entries = serializeDifficultyMap(difficulty);
+    expect(entries).toEqual([
+      '1,,,,,,,,,,,,,,,',
+      '2,,,,,,,,,,,,,,,,,,,', // 5拍(60tick)分 = 20セル
+    ]);
+    expect(stripIds(reparse(entries))).toEqual(stripIds(difficulty));
+  });
+
+  it('beats変更とbpm変更が同一tickで起きる場合、beatsは出力に含まれない', () => {
+    const difficulty = makeDifficulty({
+      notes: [tap(0, 0), tap(1, 48)],
+      timelineEvents: [event(0, { beats: 4 }), event(48, { beats: 5, bpm: 200 })],
+    });
+    const entries = serializeDifficultyMap(difficulty);
+    expect(entries).toEqual([
+      '1,,,,,,,,,,,,,,,',
+      { bpm: 200 },
+      '2,,,,,,,,,,,,,,,,,,,',
+    ]);
+  });
+
+  it('beats変更イベントが小節境界に乗っていない場合はエラーを投げる', () => {
+    const difficulty = makeDifficulty({
+      notes: [tap(0, 0)],
+      timelineEvents: [event(0, { beats: 4 }), event(30, { beats: 5 })],
+    });
+    expect(() => serializeDifficultyMap(difficulty)).toThrow(/measure boundary/);
+  });
+
+  it('同一tickで矛盾するbeats値を持つイベントがある場合はエラーを投げる', () => {
+    const difficulty = makeDifficulty({
+      notes: [tap(0, 0)],
+      timelineEvents: [event(48, { beats: 5 }), event(48, { beats: 6 })],
+    });
+    expect(() => serializeDifficultyMap(difficulty)).toThrow(/[Cc]onflicting beats/);
+  });
+
+  it('不正なbeats値はエラーを投げる', () => {
+    expect(() => serializeDifficultyMap(makeDifficulty({ timelineEvents: [event(0, { beats: 0 })] }))).toThrow(
+      /beats/,
+    );
+    expect(() => serializeDifficultyMap(makeDifficulty({ timelineEvents: [event(0, { beats: 3.5 })] }))).toThrow(
+      /beats/,
+    );
   });
 });

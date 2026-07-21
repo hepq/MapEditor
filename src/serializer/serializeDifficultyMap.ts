@@ -13,8 +13,6 @@
 import type { BindZone, Difficulty, Note, TimelineEvent } from '../types/chartProject';
 import type { SparebeatMapEntry, SparebeatTimelineEventJSON } from '../types/sparebeat';
 
-const TICKS_PER_MEASURE = 48;
-
 const NORMAL_CHARS = '1234';
 const ATTACK_CHARS = '5678';
 const LONG_START_CHARS = 'abcd';
@@ -115,6 +113,45 @@ function computeCells(boundarySet: Set<number>, totalTicks: number): Cell[] {
   return cells.reverse();
 }
 
+/**
+ * timelineEventの`beats`変更列から可変長の小節境界tick列を求める。
+ * 各`beats`変更は、それまでの拍子で計算した小節境界に一致していなければならない。
+ */
+function computeMeasureBoundaries(
+  beatsChangesByTick: Map<number, number>, // 必ずtick=0のエントリを含む
+  maxBoundaryTick: number, // ノーツ/括弧から決まる最大tick。無ければ-1
+  maxEventTick: number, // 全timelineEventのうち最大tick。無ければ-1
+): { boundaries: number[]; measureCount: number } {
+  const changeTicks = [...beatsChangesByTick.keys()].sort((a, b) => a - b);
+  const overallTarget = Math.max(maxBoundaryTick, maxEventTick);
+
+  const boundaries: number[] = [0];
+  let currentBeats = beatsChangesByTick.get(0)!;
+  let changeIdx = 1;
+  let tick = 0;
+
+  while (tick <= overallTarget) {
+    const step = currentBeats * 12;
+    const next = tick + step;
+    if (changeIdx < changeTicks.length && changeTicks[changeIdx] < next) {
+      throw new Error(
+        `Timeline event must be on a measure boundary ` +
+          `(beats change at tick ${changeTicks[changeIdx]} does not align with the ` +
+          `current ${currentBeats}-beat (${step}-tick) measure grid starting at tick ${tick})`,
+      );
+    }
+    tick = next;
+    boundaries.push(tick);
+    if (changeIdx < changeTicks.length && changeTicks[changeIdx] === tick) {
+      currentBeats = beatsChangesByTick.get(tick)!;
+      changeIdx++;
+    }
+  }
+
+  const measureCount = maxBoundaryTick < 0 ? 0 : boundaries.findIndex((b) => b > maxBoundaryTick);
+  return { boundaries, measureCount };
+}
+
 function collectCellChars(notes: Note[]): Map<number, CellChar[]> {
   const cellCharsByTick = new Map<number, CellChar[]>();
   const addCellChar = (tick: number, lane: number, rank: number, char: string) => {
@@ -195,41 +232,72 @@ export function serializeDifficultyMap(difficulty: Difficulty): SparebeatMapEntr
   const cellCharsByTick = collectCellChars(difficulty.notes);
   const { openTicks, closeTicks } = collectBindTicks(difficulty.bindZones);
 
-  // timelineEventオブジェクトは小節と小節の間にしか置けないため、小節境界のtickのみ許可
-  const eventsByMeasure = new Map<number, SparebeatTimelineEventJSON[]>();
+  // beats変更イベントから可変長の小節境界を求める
+  const beatsChangesByTick = new Map<number, number>();
   for (const event of difficulty.timelineEvents) {
     assertValidTick(event.tick, `tick of timeline event '${event.id}'`);
-    if (event.tick % TICKS_PER_MEASURE !== 0) {
-      throw new Error(
-        `Timeline event '${event.id}' must be on a measure boundary ` +
-          `(tick ${event.tick} is not a multiple of ${TICKS_PER_MEASURE})`,
-      );
+    if (event.beats !== undefined) {
+      if (!Number.isInteger(event.beats) || event.beats <= 0) {
+        throw new Error(
+          `Invalid beats value for timeline event '${event.id}': ${event.beats} (must be a positive integer)`,
+        );
+      }
+      if (beatsChangesByTick.has(event.tick) && beatsChangesByTick.get(event.tick) !== event.beats) {
+        throw new Error(
+          `Conflicting beats values at tick ${event.tick}: ` +
+            `${beatsChangesByTick.get(event.tick)} vs ${event.beats} (timeline event '${event.id}')`,
+        );
+      }
+      beatsChangesByTick.set(event.tick, event.beats);
     }
-    const measureIndex = event.tick / TICKS_PER_MEASURE;
-    let events = eventsByMeasure.get(measureIndex);
-    if (!events) {
-      events = [];
-      eventsByMeasure.set(measureIndex, events);
-    }
-    events.push(toTimelineEventJSON(event));
   }
+  if (!beatsChangesByTick.has(0)) beatsChangesByTick.set(0, 4); // 手組みモデル向けの防御的デフォルト
 
   // 小節数: 最後のセルを要するtick（ノーツ・括弧）を含むところまで。
-  // 終端がちょうど小節境界48nの場合、次の小節の先頭セルに ] や終点文字が付く
+  // 終端がちょうど小節境界の場合、次の小節の先頭セルに ] や終点文字が付く
   let maxBoundaryTick = -1;
   for (const tick of cellCharsByTick.keys()) maxBoundaryTick = Math.max(maxBoundaryTick, tick);
   for (const tick of openTicks) maxBoundaryTick = Math.max(maxBoundaryTick, tick);
   for (const tick of closeTicks) maxBoundaryTick = Math.max(maxBoundaryTick, tick);
-  const measureCount = maxBoundaryTick < 0 ? 0 : Math.floor(maxBoundaryTick / TICKS_PER_MEASURE) + 1;
-  const totalTicks = measureCount * TICKS_PER_MEASURE;
+
+  let maxEventTick = -1;
+  for (const event of difficulty.timelineEvents) maxEventTick = Math.max(maxEventTick, event.tick);
+
+  const { boundaries, measureCount } = computeMeasureBoundaries(beatsChangesByTick, maxBoundaryTick, maxEventTick);
+  const boundaryIndex = new Map(boundaries.map((t, i) => [t, i]));
+  const totalTicks = boundaries[measureCount];
+
+  // timelineEventオブジェクトは小節と小節の間にしか置けないため、小節境界のtickのみ許可
+  const eventsByMeasure = new Map<number, SparebeatTimelineEventJSON[]>();
+  for (const event of difficulty.timelineEvents) {
+    const idx = boundaryIndex.get(event.tick);
+    if (idx === undefined) {
+      throw new Error(
+        `Timeline event '${event.id}' must be on a measure boundary ` +
+          `(tick ${event.tick} does not align with the configured beats/measure grid)`,
+      );
+    }
+    const json = toTimelineEventJSON(event);
+    if (Object.keys(json).length === 0) continue; // beatsのみの内部マーカーは出力しない
+    let events = eventsByMeasure.get(idx);
+    if (!events) {
+      events = [];
+      eventsByMeasure.set(idx, events);
+    }
+    events.push(json);
+  }
 
   const boundarySet = new Set<number>([...cellCharsByTick.keys(), ...openTicks, ...closeTicks]);
-  for (let i = 0; i <= measureCount; i++) boundarySet.add(i * TICKS_PER_MEASURE);
+  for (let i = 0; i <= measureCount; i++) boundarySet.add(boundaries[i]);
   const cells = measureCount > 0 ? computeCells(boundarySet, totalTicks) : [];
 
   const cellsByMeasure: string[][] = Array.from({ length: measureCount }, () => []);
+  let measureCursor = 0;
   let prevMode: GridMode = 0;
   for (const cell of cells) {
+    while (measureCursor + 1 < measureCount && boundaries[measureCursor + 1] <= cell.startTick) {
+      measureCursor++;
+    }
     let text = '';
     if (prevMode === 1 && cell.mode === 0) text += ')';
     if (closeTicks.has(cell.startTick)) text += ']';
@@ -240,7 +308,7 @@ export function serializeDifficultyMap(difficulty: Difficulty): SparebeatMapEntr
       chars.sort((a, b) => a.lane - b.lane || a.rank - b.rank);
       text += chars.map((c) => c.char).join('');
     }
-    cellsByMeasure[Math.floor(cell.startTick / TICKS_PER_MEASURE)].push(text);
+    cellsByMeasure[measureCursor].push(text);
     prevMode = cell.mode;
   }
 
